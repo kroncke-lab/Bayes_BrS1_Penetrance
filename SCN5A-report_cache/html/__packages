@@ -1,0 +1,10 @@
+base
+DBI
+RSQLite
+dplyr
+ggplot2
+magrittr
+ggpubr
+checkmate
+forestplot
+latex2exp
