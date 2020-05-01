@@ -159,7 +159,7 @@ table(data$resnum)
 # create a composite index for merging
 pph2$res_nm <- paste0(as.character(pph2$resnum),pph2$nativeAA,pph2$mutAA)
 
-# sasa
+# sasa (solvent accessible surface area)
 dim(sasa)
 # all unique
 dim(unique(sasa))
@@ -167,7 +167,7 @@ head(sasa)
 # unique resnum
 length(unique(sasa$resnum)) == nrow(sasa)
 
-# bcl
+# bcl (structure-based features outputed from biochemical library maintained in the Meiler Lab)
 dim(bcl)
 # eight duplicates
 dim(unique(bcl))
@@ -179,7 +179,7 @@ dim(bcl)
 dim(unique(bcl))
 head(bcl)
 
-# prov
+# prov (PROVEAN)
 dim(prov)
 dim(unique(prov))
 # 15 duplicates
@@ -191,7 +191,7 @@ prov$res_nm <- paste0(as.character(prov$resnum),prov$nativeAA,prov$mutAA)
 
 
 # Step 4: merge data with 4 additional data sets
-# pph
+# pph (PolyPhen-2)
 data.pph <- merge(data,pph2,by="res_nm",all.x=T)
 dim(data.pph)
 # drop the resnum, mutAA, nativeAA from pph2
@@ -243,6 +243,8 @@ dim(mydata.total)
 names(mydata.total)
 
 # keep only missense, aadel and aains mututation types
+# nonsense variants are clearly important, however, they offer little variability in the covariates
+# we use to construct the method and therefore are not included.
 mydata.total <- mydata.total[mydata.total$mut_type %in% c("missense","aadel", "aains"),]
 dim(mydata.total)
 
@@ -256,7 +258,7 @@ save(d,file="BrS1_data.RData")
 
 ```
 
-# EM algorithm
+# EM algorithm (Expectation Maximization)
 ## Step 1 Calculate weighted penetrance
 The weighted penetrance is  
 
@@ -357,7 +359,7 @@ The variance $\tilde\sigma^2_i$ of posterior distribution is
 
 $$\tilde\sigma^2_i=\frac{\alpha_{1i}\beta_{1i}}{(\alpha_{1i}+\beta_{1i})^2(\alpha_{1i}+\beta_{1i}+1)} $$
 
-which is raised at 20th percentile.  
+which is raised at 20th percentile. This aviods having a ~3-5 common variants dictate the weighting at the near exclusion of all other variants 
 
 ```{r}
 pmv <- function(alpha,beta){
@@ -374,9 +376,9 @@ d$p_variance_w <- p_variance_w
 
 <a href="#top">Back to top</a>  
 
-## Step 5 Calculate penetrance density from $\tilde\mu_i$ using function `funcdist`
+## Step 5 Calculate penetrance density from $\tilde\mu_i$ using function `funcdist` from the "func_dist_seq.R" script and "distances" referenced at line 28 above.
 
-Note that only 774 out of 1439 (53.8%) variants fall within structured regions of the protein.  
+Note that only 774 out of 1439 (53.8%) variants fall within structured regions of the protein. For the remaining 46.2% of variants we employ a residue distance estimate of a flexible polymer as described in the supplemental materials.   
 
 ```{r}
 index <- seq(1,length(d$resnum),1)
