@@ -359,7 +359,7 @@ The variance $\tilde\sigma^2_i$ of posterior distribution is
 
 $$\tilde\sigma^2_i=\frac{\alpha_{1i}\beta_{1i}}{(\alpha_{1i}+\beta_{1i})^2(\alpha_{1i}+\beta_{1i}+1)} $$
 
-which is raised at 20th percentile. This aviods having a ~3-5 common variants dictate the weighting at the near exclusion of all other variants 
+which is raised at 20th percentile. This aviods having ~3-5 common variants dictate the weighting at the near exclusion of all other variants 
 
 ```{r}
 pmv <- function(alpha,beta){
@@ -418,7 +418,7 @@ $$\delta=\sum_{i=1}^m |p^{em+}_i-p^{em-}_i| $$
 
 where $p_i^{em+}$ is the penetrance after one iteration of EM alogrithm for each variant, and $p_i^{em-}$ is the penetrance from the previous iteration of EM alogrithm for each variant.  
 
-EM algorithm converges in 7 steps.  
+EM algorithm typically converges in 7 steps.  
 
 
 ```{r}
@@ -488,7 +488,7 @@ while(delta>0.1 & count < 10){
 
 <a href="#top">Back to top</a>  
 
-Scale the variance by a factor of 20  
+Scale the variance by a factor of 20. This is subjective and we suggest scaling could be a factor between 10 and 20, equivalent to 9-19 hypothetical observations of clinically phenotyped heterozygous individuals per variant.
 
 ```{r}
 # update alpha and beta
@@ -693,7 +693,7 @@ plotf(1401,1439)
 
 ```
 
-The forests plots are pasted below, where blue boxes are EM posteriors, and red segements are EM priors.    
+The forests plots are pasted below, where blue boxes are EM posteriors, and red segements are the 95% credible intervals for the EM priors.    
 
 ![](Plots/Forest Plots/1-50pics.png)
 
@@ -758,7 +758,7 @@ The forests plots are pasted below, where blue boxes are EM posteriors, and red 
 
 ## Part 4 Correlation Coefficients and Plots
 
-The code to produce the weighted correlations is shown in the code chunk. The size of the circles in the presented figures are scaled by the Log<sub>10</sub>(Total Number of Carriers).   
+The code to produce the weighted correlations is shown in the code chunk. The size of the circles in the presented figures are scaled by the Log<sub>10</sub>(Total Number of Carriers). We additionally calculate 95% confidence intervals on the weighted correlations and AICs.  
 
 ```{r}
 rm(d)
