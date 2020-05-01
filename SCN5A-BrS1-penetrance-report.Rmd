@@ -23,7 +23,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r preamble,include=FALSE}
 # set the working directory
-setwd("/Users/Brett/Box Sync/Kroncke_Lab/GitHub/resources/A Bayesian method to estimate disease penetrance from genetic variant properties/")
+setwd("/path/to/GitHub/Bayes_BrS1_Penetrance/")
 source('func_dist_seq.R')
 distances<-readRDS("distance_file")
 
