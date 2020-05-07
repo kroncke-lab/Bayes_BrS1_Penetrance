@@ -562,7 +562,7 @@ BootsCoverage <- function(var,n=100,N=1000,true){
 <a href="#top">Back to top</a>  
 
 ### Plot coverage
-#### Empirical penetrance as the true penetrance
+#### Empirical penetrance as the "true" penetrance
 
 The coverage plot where the empirical penetrance is the true penetrance and one hundred new observations are added is shown below. 
 
@@ -582,7 +582,7 @@ ggplot(data=new.data,aes(x=Penetrance,y=Coverage))+geom_point(aes(size=Number,co
   theme(legend.position = "bottom",legend.box = 'vertical',legend.justification = 'left',legend.box.just = 'left',legend.title = element_text(size=8))+scale_colour_gradient(low = "dodgerblue", high = "black")
 ```
 
-#### Observed penetrance as the true penetrance
+#### Observed penetrance as the "true" penetrance
 
 The coverage plot where the observed penetrance is the true penetrance and one hundred new observations are added is shown below. 
 
