@@ -23,7 +23,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r preamble,include=FALSE}
 # set the working directory
-setwd("/Users/Brett/Box Sync/Kroncke_Lab/GitHub/resources/A Bayesian method to estimate disease penetrance from genetic variant properties/")
+setwd("/Users/KRONCKE/Box Sync/Kroncke_Lab/GitHub/Bayes_BrS1_Penetrance/")
 source('func_dist_seq.R')
 distances<-readRDS("distance_file")
 
@@ -43,7 +43,7 @@ Data are cleaned and saved in `RData` format for the subsequent analyses.
 ```{r load,eval=FALSE}
 # Step 1: load the original data
 con = dbConnect(SQLite(),
-                dbname="VariantSCN5A-second-revision.db")
+                dbname="VariantSCN5A-third-revision.db")
 alltables = dbListTables(con)
 my.data <- dbReadTable(con, 'VariantSCN5A')
 my.data[my.data=='NA'] <- NA
@@ -60,6 +60,9 @@ sum(data$resnum=="") # 1246 missing
 
 # convert strings to numeric values
 data$resnum<-suppressWarnings(as.integer(data$resnum))
+data$ipeak<-suppressWarnings(as.numeric(data$ipeak))
+data$vhalfact<-suppressWarnings(as.numeric(data$vhalfact))
+data$ilate<-suppressWarnings(as.numeric(data$ilate))
 sum(is.na(data$resnum)) # 1300 missing, three more 
 
 # replace missing resnum with the number after the first capital letters?
@@ -85,6 +88,9 @@ data[data$var=="p.L1339del","resnum"]<-1339
 data[data$var=="p.M741_T742delinsI ","resnum"]<-741
 data[data$var=="Y1795insD","resnum"]<-1795
 data[data$var=="p.A586_L587del","resnum"]<-586
+data[data$var=="p.A586_L587del","lqt3"]<-1
+data[data$var=="p.A586_L587del","var"]<-"p.586_587delAL"
+data<-data[data$var!="p.A586_L587del",]
 data[data$var=="p.E1939_E1943del","resnum"]<-1939
 data[data$var=="p.E1072del","resnum"]<-1072
 data[data$var=="p.E1064del","resnum"]<-1064
@@ -271,7 +277,7 @@ load("BrS1_data.RData")
 # Step 1: Calculate overall penetrance and weighted penetrance  
 
 # observed penetrance for each variant
-d$p_observed <- d$brs1/d$total_carriers 
+d$p_observed <- d$lqt3/d$total_carriers 
 
 # overall penetrance 
 p_bar <- sum(d$brs1)/sum(d$total_carriers)
@@ -416,7 +422,7 @@ $$\delta=\sum_{i=1}^m |p^{em+}_i-p^{em-}_i| $$
 
 where $p_i^{em+}$ is the penetrance after one iteration of EM alogrithm for each variant, and $p_i^{em-}$ is the penetrance from the previous iteration of EM alogrithm for each variant.  
 
-EM algorithm converges in 7 steps.  
+EM algorithm converges in 7 steps.    
 
 
 ```{r}
@@ -486,7 +492,7 @@ while(delta>0.1 & count < 10){
 
 <a href="#top">Back to top</a>  
 
-Scale the variance by a factor of 20  
+Scale the variance by a factor of 20, add function and structure annotations  
 
 ```{r}
 # update alpha and beta
@@ -502,6 +508,27 @@ beta_g <- alpha_g * (1 / mean - 1)
 # save data
 d$alpha_g <- alpha_g
 d$beta_g <- beta_g
+
+# update brs1/lqt3 penetrance posterior estimates
+d$brs1_penetrance<-(d$alpha_g+d$brs1)/(d$total_carriers+d$beta_g+d$alpha_g)
+d$lqt3_penetrance<-(0.366+d$lqt3)/(d$total_carriers+0.366+2.88)
+
+# annotate functional perturbation
+d$Function<-NA
+d[!is.na(d$ipeak) & d$ipeak<0.1,"Function"]<-"LOF"
+d[!is.na(d$ipeak) & d$ipeak<0.5 & d$ipeak>=0.1,"Function"]<-"Partial_LOF"
+d[!is.na(d$ipeak) & d$ipeak>=0.5 & d$ipeak<0.75,"Function"]<-"Mild_LOF"
+d[!is.na(d$ipeak) & d$ipeak>=0.75 & d$ipeak<1.25,"Function"]<-"Normal"
+d[!is.na(d$ipeak) & d$ipeak>=1.25,"Function"]<-"GOF"
+d[!is.na(d$vhalfact) & d$vhalfact>10,"Function"]<-"Partial_LOF"
+d[!is.na(d$ilate) & d$ilate>=3,"Function"]<-"GOF"
+
+# annotate structural location (hotspot) 
+d$Structure<-NA
+d[!is.na(d$feat_dist_w) & d$feat_dist_w<0.1,"Structure"]<-"Non_Hotspot"
+d[!is.na(d$feat_dist_w) & d$feat_dist_w>=0.1 & d$feat_dist_w<0.4,"Structure"]<-"Mild_Hotspot"
+d[!is.na(d$feat_dist_w) & d$feat_dist_w>=0.4,"Structure"]<-"Hotspot"
+
 save(d,file="CheckPoint_20.RData")
 
 ```
@@ -664,15 +691,15 @@ lower <- qbeta(0.025,d$alpha_g,d$beta_g)
 higher <- qbeta(0.975,d$alpha_g,d$beta_g) 
 
 forest.data <- data.frame(variant = d$var, em.posterior = new_mean, empirical.posterior=alt.mean,
-                          lower=lower, higher=higher,total.carriers=d$total_carriers)
+                          lower=lower, higher=higher,total.carriers=d$total_carriers, brs1=d$brs1, resnum=d$resnum)
 
-forest.data <- forest.data[order(forest.data$variant,forest.data$total.carriers),]
+forest.data <- forest.data[order(forest.data$resnum,forest.data$total.carriers),]
 
 head(forest.data)
 
 plotf <- function(a,b){
   png( paste("Plots/Forest Plots/", a, "-",b,"pics.png",sep=""),res=300,height=10,width=10,units="in")
-  forestplot(paste("Variant: ",forest.data[a:b,"variant"],", total carriers:",forest.data$total.carriers[a:b]), 
+  forestplot(paste(forest.data[a:b,"variant"], " ", forest.data$brs1[a:b], "/", forest.data$total.carriers[a:b]), 
            fn.ci_norm = fpDrawNormalCI,
            boxsize = .25, # We set the box size to better visualize the type
            line.margin = .1, # We need to add this to avoid crowding
@@ -691,7 +718,7 @@ plotf(1401,1439)
 
 ```
 
-The forests plots are pasted below, where blue boxes are EM posteriors, and red segements are EM priors.    
+The forests plots are pasted below, where blue boxes are EM posteriors, and red segements are EM priors. Variant name is followed by number of Brs1 cases / total number of heterozygotes.    
 
 ![](Plots/Forest Plots/1-50pics.png)
 
@@ -754,9 +781,8 @@ The forests plots are pasted below, where blue boxes are EM posteriors, and red 
 
 <a href="#top">Back to top</a>  
 
-## Part 4 Correlation Coefficients and Plots
-
-The code to produce the weighted correlations is shown in the code chunk. The size of the circles in the presented figures are scaled by the Log<sub>10</sub>(Total Number of Carriers).   
+## Part 4 Correlation Coefficients and Plots 
+The code to produce the weighted correlations is shown in the code chunk. The size of the circles in the presented figures are scaled by the Log<sub>10</sub>(Total Number of Carriers).
 
 ```{r}
 rm(d)
@@ -787,73 +813,85 @@ plt.disease <- function(d, func, funcName, disName, xl=c(0,200), yl=c(0,100), va
 d$BrS_penetranceBayesian<-(d$alpha_g+d$brs1)/(d$alpha_g+d$beta_g+d$total_carriers)
 filt<-0
 fglm<-d[d$total_carriers>filt & !is.na(d$blastpssm) & !is.na(d$ipeak) & !is.na(d$feat_dist_w), ]
+```
 
+### Expectation Maximization
+The following figures and calculations compare EM priors (predicted) with EM posteriors (penetrance or "truth")
+
+#### Peak Current Covariate Alone
+
+```{r}
 model <- lm(BrS_penetranceBayesian ~ ipeak, fglm, weights = 1/fglm$p_variance_w)
 fglm$pred.ipeak<-predict(model, fglm, type="response")
 plt.disease(fglm, "pred.ipeak", "Predicted Penetrance", "BrS_penetranceBayesian", xl=c(0,0.9),yl=c(0,0.9))
-print("Peak Current Covariate Alone")
-weightedCorr(model$fitted.values,model$model$BrS_penetranceBayesian, method="pearson", weights = model$weights)^2
 mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian,model$weights)
 foo <- boot(mod, function(data,indices)
   weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
-foo$t0
-quantile(foo$t,c(0.025,0.975))
+```
 
-extractAIC(model)
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### Penetrance Density Covariate Alone
+
+```{r}
 
 model <- lm(BrS_penetranceBayesian ~ feat_dist_w, fglm, weights = 1/fglm$p_variance_w)
 fglm$pred.feat_dist<-predict(model, fglm, type="response")
 plt.disease(fglm, "pred.feat_dist", "Predicted Penetrance", "BrS_penetranceBayesian", xl=c(0,0.9),yl=c(0,0.9))
-print("Penetrance Density Covariate Alone")
-weightedCorr(model$fitted.values,model$model$BrS_penetranceBayesian, method="pearson", weights = model$weights)^2
 mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian,model$weights)
 foo <- boot(mod, function(data,indices)
   weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
-foo$t0
-quantile(foo$t,c(0.025,0.975))
 
-extractAIC(model)
+```
 
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### Peak Current and Penetrance Density Covariates
+
+```{r}
 model <- lm(BrS_penetranceBayesian~ipeak+feat_dist_w,fglm, weights = 1/fglm$p_variance_w)
 fglm$pred.ipeak.dist<-predict(model, fglm, type="response")
 plt.disease(fglm, "pred.ipeak.dist", "Predicted Penetrance", "BrS_penetranceBayesian", xl=c(0,0.9),yl=c(0,0.9))
-print("Peak Current and Penetrance Density Covariates")
-weightedCorr(model$fitted.values,model$model$BrS_penetranceBayesian, method="pearson", weights = model$weights)^2
 mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian,model$weights)
 foo <- boot(mod, function(data,indices)
   weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
-foo$t0
-quantile(foo$t,c(0.025,0.975))
 
-extractAIC(model)
+```
 
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### In Silico, Peak Current, and Penetrance Density Covariates
+
+```{r}
 model <- lm(BrS_penetranceBayesian~ipeak+feat_dist_w+eaRate+blastpssm+provean_score+pph2_prob,fglm, weights = 1/fglm$p_variance_w)
 fglm$pred.all.comps.ipeak<-predict(model, fglm, type="response")
 plt.disease(fglm, "pred.all.comps.ipeak", "Predicted Penetrance", "BrS_penetranceBayesian", xl=c(0,0.9),yl=c(0,0.9))
-print("In Silico, Peak Current, and Penetrance Density Covariates")
-weightedCorr(model$fitted.values,model$model$BrS_penetranceBayesian, method="pearson", weights = model$weights)^2
 mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian,model$weights)
 foo <- boot(mod, function(data,indices)
   weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
-foo$t0
-quantile(foo$t,c(0.025,0.975))
 
-extractAIC(model)
+```
 
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### In Silico Covariates Alone
+
+```{r}
 model <- lm(BrS_penetranceBayesian~eaRate+blastpssm+provean_score+pph2_prob,fglm, weights = 1/fglm$p_variance_w)
 fglm$pred.all.comps<-predict(model, fglm, type="response")
 plt.disease(fglm, "pred.all.comps", "Predicted Penetrance", "BrS_penetranceBayesian", xl=c(0,0.9),yl=c(0,0.9))
-print("In Silico Covariates Alone")
-weightedCorr(model$fitted.values,model$model$BrS_penetranceBayesian, method="pearson", weights = model$weights)^2
 mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian,model$weights)
 foo <- boot(mod, function(data,indices)
   weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
-foo$t0
-quantile(foo$t,c(0.025,0.975))
 
-extractAIC(model)
+```
 
-# Empirical
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+### Empirical Bayes
+The code to produce the weighted correlations is shown in the code chunk. The size of the circles in the presented figures are scaled by the Log<sub>10</sub>(Total Number of Carriers). The following figures and calculations compare EM priors (predicted) with *Empirical* posteriors (penetrance or "truth")
+
+```{r}
 d$BrS_penetranceBayesian_initial<-(alpha_0_w+d$brs1)/(alpha_0_w+beta_0_w+d$total_carriers)
 filt<-0
 fglm<-d[d$total_carriers>filt & !is.na(d$blastpssm) & !is.na(d$ipeak) & !is.na(d$feat_dist_w), ]
@@ -861,67 +899,68 @@ fglm<-d[d$total_carriers>filt & !is.na(d$blastpssm) & !is.na(d$ipeak) & !is.na(d
 model <- lm(BrS_penetranceBayesian_initial ~ ipeak, fglm, weights = 1/fglm$p_variance_w)
 fglm$pred.ipeak<-predict(model, fglm, type="response")
 plt.disease(fglm, "pred.ipeak", "Predicted Penetrance", "BrS_penetranceBayesian_initial", xl=c(0,0.9),yl=c(0,0.9))
-print("Peak Current Covariate Alone")
-weightedCorr(model$fitted.values,model$model$BrS_penetranceBayesian_initial, method="pearson", weights = model$weights)^2
 mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian_initial,model$weights)
 foo <- boot(mod, function(data,indices)
   weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian_initial[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
-foo$t0
-quantile(foo$t,c(0.025,0.975))
 
-extractAIC(model)
+```
 
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### Penetrance Density Covariate Alone
+
+```{r}
 model <- lm(BrS_penetranceBayesian_initial ~ feat_dist_w, fglm, weights = 1/fglm$p_variance_w)
 fglm$pred.feat_dist<-predict(model, fglm, type="response")
 plt.disease(fglm, "pred.feat_dist", "Predicted Penetrance", "BrS_penetranceBayesian_initial", xl=c(0,0.9),yl=c(0,0.9))
-print("Penetrance Density Covariate Alone")
-weightedCorr(model$fitted.values,model$model$BrS_penetranceBayesian_initial, method="pearson", weights = model$weights)^2
 mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian_initial,model$weights)
 foo <- boot(mod, function(data,indices)
   weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian_initial[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
-foo$t0
-quantile(foo$t,c(0.025,0.975))
 
-extractAIC(model)
+```
 
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### Peak Current and Penetrance Density Covariates
+
+```{r}
 model <- lm(BrS_penetranceBayesian_initial~ipeak+feat_dist_w,fglm, weights = 1/fglm$p_variance_w)
 fglm$pred.ipeak.dist<-predict(model, fglm, type="response")
 plt.disease(fglm, "pred.ipeak.dist", "Predicted Penetrance", "BrS_penetranceBayesian_initial", xl=c(0,0.9),yl=c(0,0.9))
-print("Peak Current and Penetrance Density Covariates")
-weightedCorr(model$fitted.values,model$model$BrS_penetranceBayesian_initial, method="pearson", weights = model$weights)^2
 mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian_initial,model$weights)
 foo <- boot(mod, function(data,indices)
   weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian_initial[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
-foo$t0
-quantile(foo$t,c(0.025,0.975))
 
-extractAIC(model)
+```
 
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### Peak Current and Penetrance Density Covariates
+
+```{r}
 model <- lm(BrS_penetranceBayesian_initial~ipeak+feat_dist_w+eaRate+blastpssm+provean_score+pph2_prob,fglm, weights = 1/fglm$p_variance_w)
 fglm$pred.all.comps.ipeak<-predict(model, fglm, type="response")
 plt.disease(fglm, "pred.all.comps.ipeak", "Predicted Penetrance", "BrS_penetranceBayesian_initial", xl=c(0,0.9),yl=c(0,0.9))
 print("In Silico, Peak Current, and Penetrance Density Covariates")
-weightedCorr(model$fitted.values,model$model$BrS_penetranceBayesian_initial, method="pearson", weights = model$weights)^2
 mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian_initial,model$weights)
 foo <- boot(mod, function(data,indices)
   weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian_initial[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
-foo$t0
-quantile(foo$t,c(0.025,0.975))
 
-extractAIC(model)
+```
 
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### In Silico Covariates Alone
+
+```{r}
 model <- lm(BrS_penetranceBayesian_initial~eaRate+blastpssm+provean_score+pph2_prob,fglm, weights = 1/fglm$p_variance_w)
 fglm$pred.all.comps<-predict(model, fglm, type="response")
 plt.disease(fglm, "pred.all.comps", "Predicted Penetrance", "BrS_penetranceBayesian_initial", xl=c(0,0.9),yl=c(0,0.9))
-print("In Silico Covariates Alone")
-weightedCorr(model$fitted.values,model$model$BrS_penetranceBayesian_initial, method="pearson", weights = model$weights)^2
 mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian_initial,model$weights)
 foo <- boot(mod, function(data,indices)
   weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian_initial[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
-foo$t0
-quantile(foo$t,c(0.025,0.975))
-
-extractAIC(model)
-
 
 ```
+
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+

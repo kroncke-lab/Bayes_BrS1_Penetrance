@@ -8,7 +8,7 @@ funcdist <- function(resnum, var, deval, distances, function_name, weight_functi
   resnum<-toString(resnum)
   sum_weights <- 0
   sum_function <- 0
-  print(var)
+  #print(var)
   if (is.null(names(distances[[resnum]]))){
     seq_dists<-seq(as.integer(resnum)-30, as.integer(resnum)+30,1)
     seq_dists<-seq_dists[seq_dists<2017 & seq_dists>0]
