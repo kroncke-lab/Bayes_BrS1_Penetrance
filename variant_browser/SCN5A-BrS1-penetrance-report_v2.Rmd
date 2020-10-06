@@ -1,0 +1,977 @@
+---
+title: "SCN5A Penetrance Prediction"
+author: "Brett Kroncke and Yi Zuo"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: false
+      # collapsed: true
+    smooth_scroll: true
+    code_folding: hide
+    highlight: zenburn #textmate
+    theme: flatly
+    # number_sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r preamble,include=FALSE}
+# set the working directory
+setwd("/Users/KRONCKE/Box Sync/Kroncke_Lab/GitHub/Bayes_BrS1_Penetrance/variant_browser/")
+source('../func_dist_seq.R')
+scn5a_dist <- read.csv(file = "distances_final.csv", header = FALSE)
+
+library("DBI")
+library("RSQLite")
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(forestplot)
+library(latex2exp)
+```
+
+# Data preparation
+
+Data are cleaned and saved in `RData` format for the subsequent analyses.  
+
+```{r load,eval=FALSE}
+# Step 1: load the original data
+con = dbConnect(SQLite(),
+                dbname="../VariantSCN5A-third-revision.db")
+alltables = dbListTables(con)
+my.data <- dbReadTable(con, 'VariantSCN5A')
+my.data[my.data=='NA'] <- NA
+data<-my.data
+dbDisconnect(con)
+
+dim(data) # 2417 by 29
+names(data)
+
+# clean `resnum`
+table(data$resnum)
+sum(is.na(data$resnum)) # 51 * + 1246 missing = 1297 abnormal
+sum(data$resnum=="") # 1246 missing
+
+# convert strings to numeric values
+data$resnum<-suppressWarnings(as.integer(data$resnum))
+data$ipeak<-suppressWarnings(as.numeric(data$ipeak))
+data$vhalfact<-suppressWarnings(as.numeric(data$vhalfact))
+data$ilate<-suppressWarnings(as.numeric(data$ilate))
+sum(is.na(data$resnum)) # 1300 missing, three more 
+
+# replace missing resnum with the number after the first capital letters?
+for (variant in data$var){
+  if (is.na(data[data$var==variant, "resnum"])){
+    suppressWarnings(data[data$var==variant, "resnum"]<-as.integer(strsplit(variant,"[A-Z]")[[1]][2]))
+  }
+}
+
+sum(is.na(data$resnum)) # 45 unsuccessful conversion
+
+data[is.na(data$resnum),c("var","resnum")]
+
+# manually get resnum from var among variants of interest
+data[data$var=="E444fsX14","resnum"]<-444
+data[data$var=="F1775fsX1785","resnum"]<-1775
+data[data$var=="L1579fsX53","resnum"]<-1579
+data[data$var=="p.1795insD","resnum"]<-1795
+data[data$var=="p.G1031fsX27","resnum"]<-1031
+data[data$var=="p.G1748del","resnum"]<-1748
+data[data$var=="p.G1758del","resnum"]<-1758
+data[data$var=="p.L1339del","resnum"]<-1339
+data[data$var=="p.M741_T742delinsI ","resnum"]<-741
+data[data$var=="Y1795insD","resnum"]<-1795
+data[data$var=="p.A586_L587del","resnum"]<-586
+data[data$var=="p.A586_L587del","lqt3"]<-1
+data[data$var=="p.A586_L587del","var"]<-"p.586_587delAL"
+data<-data[data$var!="p.A586_L587del",]
+data[data$var=="p.E1939_E1943del","resnum"]<-1939
+data[data$var=="p.E1072del","resnum"]<-1072
+data[data$var=="p.E1064del","resnum"]<-1064
+data[data$var=="p.F1465_L1480dup","resnum"]<-1465
+data[data$var=="p.M1875dup","resnum"]<-1875
+data[data$var=="p.N507_L515dup","resnum"]<-507
+data[data$var=="p.N291_S293dup","resnum"]<-291
+data[data$var=="p.Pro2006del","resnum"]<-2006
+data[data$var=="p.Gln1000del","resnum"]<-1000
+data[data$var=="p.S1970_S1972del","resnum"]<-1970
+data[data$var=="p.T290_G292del","resnum"]<-290
+data[data$var=="p.I1758del","resnum"]<-1758
+
+
+data[is.na(data$resnum),c("var","resnum")]
+
+# after the conversion, how many missing in resnum?
+sum(is.na(data$resnum)) # 23
+
+# are resnum unique? No
+length(unique(data$resnum))
+
+# are nativeAA and mutAA different when resnum is the same?
+duplicates <- data[duplicated(data$resnum)|duplicated(data$resnum,fromLast = T),c("var","resnum","nativeAA","mutAA")]
+
+# it appears so  
+head(duplicates[order(duplicates$resnum),])
+
+# nativeAA
+table(data$nativeAA)
+sum(is.na(data$nativeAA)) # 168 missing
+
+# mutAA
+table(data$mutAA)
+sum(is.na(data$mutAA)) # 168 missing
+
+# create a composite index for merging
+data$res_nm <- paste0(as.character(data$resnum),data$nativeAA,data$mutAA)
+
+# Step 2: load five supplementary data
+# load data
+bcl  <- read.csv("../covariates/scn5a_bcl_features.txt", header = TRUE, sep = "\t")
+sasa <- read.csv("../covariates/5a_5x0m_sasa.csv", header = TRUE)
+pph2<-read.csv("../covariates/pph2-20180329.csv", strip.white = TRUE)
+prov<-read.csv("../covariates/provean_revised.csv", strip.white = TRUE)
+pam <- read.csv("../covariates/sin_pam_energy_funcdist.csv", header = TRUE)
+rc <- read.csv("../covariates/revel_cb.csv", header = TRUE)
+
+# Step 3: examine supplementary data
+# pam
+# pam has the same covariates as in the original data
+sum(names(pam)%in%names(data)) == length(names(pam))
+# seven times duplicated observations
+nrow(pam) / nrow(unique(pam))
+pam.u <- unique(pam)
+head(pam.u)
+data[data$var == "A2T","pamscore"]
+# no need to merge with pam
+
+# pph2 
+dim(pph2)
+# all unique
+dim(unique(pph2))
+# contains four more covariates but no `var`
+sum(names(pph2)%in%names(data)) == length(names(pph2))
+names(pph2)%in%names(data)
+names(pph2)
+head(pph2)
+# each residue number has 19 rows
+length(unique(pph2$resnum))
+pph2[pph2$resnum==1,]
+table(data$resnum)
+# create a composite index for merging
+pph2$res_nm <- paste0(as.character(pph2$resnum),pph2$nativeAA,pph2$mutAA)
+
+# sasa
+dim(sasa)
+# all unique
+dim(unique(sasa))
+head(sasa)
+# unique resnum
+length(unique(sasa$resnum)) == nrow(sasa)
+
+# bcl
+dim(bcl)
+# eight duplicates
+dim(unique(bcl))
+head(bcl)
+bcl[duplicated(bcl),]
+bcl <- distinct(bcl)
+bcl<-bcl[,!(names(bcl) %in% "aaneigh_rank_inc_loops")]
+dim(bcl)
+# no duplicates
+dim(unique(bcl))
+head(bcl)
+
+# prov
+dim(prov)
+dim(unique(prov))
+# 15 duplicates
+prov <- distinct(prov)
+dim(unique(prov))[1] == nrow(prov)
+head(prov)
+# create a composite index for merging
+prov$res_nm <- paste0(as.character(prov$resnum),prov$nativeAA,prov$mutAA)
+
+
+# Step 4: merge data with 4 additional data sets
+# pph
+data.pph <- merge(data,pph2,by="res_nm",all.x=T)
+dim(data.pph)
+# drop the resnum, mutAA, nativeAA from pph2
+data.pph<-data.pph[,-which(names(data.pph) %in% c("resnum.y","mutAA.y","nativeAA.y"))]
+
+# rename resnum
+colnames(data.pph)[colnames(data.pph)=="resnum.x"] <- "resnum"
+colnames(data.pph)[colnames(data.pph)=="mutAA.x"] <- "mutAA"
+colnames(data.pph)[colnames(data.pph)=="nativeAA.x"] <- "nativeAA"
+names(data.pph)
+
+# sasa
+data.pph.sasa <- merge(data.pph,sasa,by="resnum",all.x=T)
+dim(data.pph.sasa)
+colnames(data.pph.sasa)
+
+# bcl
+data.pph.sasa.bcl <- merge(data.pph.sasa,bcl,by="var",all.x=T)
+dim(data.pph.sasa.bcl)
+names(data.pph.sasa.bcl)
+
+# prov
+data.pph.sasa.bcl.prov <- merge(data.pph.sasa.bcl,prov,by="res_nm",all.x = T)
+dim(data.pph.sasa.bcl.prov)
+names(data.pph.sasa.bcl.prov)
+
+# drop the resnum, mutAA, nativeAA from prov
+data.pph.sasa.bcl.prov<-data.pph.sasa.bcl.prov[,-which(names(data.pph.sasa.bcl.prov) %in% c("resnum.y","mutAA.y","nativeAA.y"))]
+
+# rename resnum
+colnames(data.pph.sasa.bcl.prov)[colnames(data.pph.sasa.bcl.prov)=="resnum.x"] <- "resnum"
+colnames(data.pph.sasa.bcl.prov)[colnames(data.pph.sasa.bcl.prov)=="mutAA.x"] <- "mutAA"
+colnames(data.pph.sasa.bcl.prov)[colnames(data.pph.sasa.bcl.prov)=="nativeAA.x"] <- "nativeAA"
+
+# REVEL and cardiacboost
+data.pph.sasa.bcl.prov.rc <- merge(data.pph.sasa.bcl.prov, rc, by = c("nativeAA","mutAA","resnum"), all = T)
+dim(data.pph.sasa.bcl.prov.rc)
+names(data.pph.sasa.bcl.prov.rc)
+head(data.pph.sasa.bcl.prov.rc)
+mydata <- data.pph.sasa.bcl.prov.rc
+mydata[!is.na(mydata$REVEL), "mut_type"] <- "missense"
+
+# Step 5: exclusion criteria
+# drop zero total carriers
+
+mydata$gnomAD<-as.integer(mydata$gnomAD)
+sum(is.na(mydata$gnomAD))
+mydata$gnomAD[is.na(mydata$gnomAD)] <- 0
+
+mydata$total_carriers<-mydata$unaff+mydata$lqt3+mydata$brs1+mydata$gnomAD
+mydata.total<-mydata
+dim(mydata.total)
+names(mydata.total)
+
+# keep only missense, aadel and aains mututation types
+mydata.total <- mydata.total[mydata.total$mut_type %in% c("missense","aadel", "aains"),]
+dim(mydata.total)
+
+# rename the final data set without clinical covariates
+d <- mydata.total
+d <- d[!is.na(d$resnum),]
+d[is.na(d$total_carriers),"total_carriers"] <- 0
+d[is.na(d$brs1),"brs1"] <- 0
+d[is.na(d$lqt3),"lqt3"] <- 0
+d[is.na(d$unaff),"unaff"] <- 0
+d[is.na(d$other),"other"] <- 0
+dim(d)
+names(d)
+save(d,file="BrS1_data.RData")
+
+```
+
+# EM algorithm
+## Step 1 Calculate weighted penetrance
+The weighted penetrance is  
+
+$$\bar p_w=\frac{\sum_{i=1}^m w_i \hat p_i}{\sum_{i=1}^m w_i} $$
+
+where the weight is  
+
+$$w_i=1-\frac{1}{0.01+n_i} $$
+
+```{r}
+load("BrS1_data.RData")
+# Step 1: Calculate overall penetrance and weighted penetrance  
+
+# set initial weighting and penetrance
+d$weight = 1-1/(0.01+d$total_carriers)
+d$penetrance_brs1 <- d$brs1/d$total_carriers
+d[d$total_carriers < 1,"weight"] <- 0.000 
+
+```
+
+<a href="#top">Back to top</a>  
+
+## Step 2 Fit Beta-Binomial model using method of moments
+Variants have common prior  
+
+$$\hat p_i\sim Beta(\alpha_0,\beta_0) $$
+
+The mean and variance of Beta distribution is  
+
+$$E(\hat p_i)=\bar p_w,\: Var(\hat p_i)=\text{MSE from weighted regression} $$
+We can solve for $\alpha_0$ and $\beta_0$ using method of moments.  
+
+```{r}
+wp <- function(p_observed,weight){
+  sum(weight*p_observed)/sum(weight)
+}
+
+# Mean squared error
+mse <- function(sm) {
+  mean((sm$residuals)^2*(sm$weights))
+}
+
+# Derive alpha and beta from weighted mean and MSE (estimated variance)
+estBetaParams <- function(mu, var) {
+  alpha <- ((1 - mu) / var - 1 / mu) * mu ^ 2
+  beta <- alpha * (1 / mu - 1)
+  return(params = list(alpha = alpha, beta = beta))
+}
+
+# Weighted mean to determine BrS1 penetrance empirical prior
+newdata = data.frame(wt=1)
+model <- lm(penetrance_brs1 ~ 1, data=d, weights = d$weight)
+summary(model)
+p<-predict(model, newdata)
+dev<- mse(model) #p*(1-p)
+
+# Estimated shape parameters for BrS1 empirical prior
+alpha0 = estBetaParams(p,dev)$alpha
+beta0 = estBetaParams(p,dev)$beta
+print(paste("alpha0 = ", alpha0, "  beta0 = ", beta0))
+
+
+```
+
+<a href="#top">Back to top</a>  
+
+## Step 3 Get posterior $\alpha_{1i}$ and $\beta_{1i}$
+
+Variant-specific Beta-Binomial posterior $\alpha_{1i}$ and $\beta_{1i}$ based on Beta prior  
+
+$$\alpha_{1i}=\alpha_0+x_i,\beta_{1i}=\beta_0+n_i-x_i $$
+
+```{r}
+
+# Bayesian BrS1 penetrance estimates from empirical priors 
+# and observed affected/unaffected counts:
+d$brs1_penetranceBayesian_initial <- (alpha0 + d[,"brs1"])/((alpha0 + beta0 + d[,"total_carriers"]))
+d$brs1_penetranceBayesian<-d$brs1_penetranceBayesian_initial
+
+```
+
+<a href="#top">Back to top</a>  
+
+## Step 4 Get posterior mean $\tilde\mu_i$ and variance $\tilde\sigma^2_i$
+
+The mean $\tilde\mu_i$ of posterior distribution is   
+
+$$\tilde \mu_i=\frac{\alpha_{1i}}{\alpha_{1i}+\beta_{1i}} $$
+
+The variance $\tilde\sigma^2_i$ of posterior distribution is  
+
+$$\tilde\sigma^2_i=\frac{\alpha_{1i}\beta_{1i}}{(\alpha_{1i}+\beta_{1i})^2(\alpha_{1i}+\beta_{1i}+1)} $$
+
+which is raised at 20th percentile.  
+
+```{r}
+
+# Assign p_mean_w to empirical penetrance. I need to add the reassignment to ensure
+# p_mean_w does not contain "NA"s.
+d[is.na(d$brs1_penetranceBayesian),"brs1_penetranceBayesian"] <- alpha0/(alpha0+beta0)
+d$p_mean_w <- d$brs1_penetranceBayesian
+
+pmv <- function(alpha,beta){
+  mean <- alpha/(alpha+beta)
+  variance <- alpha*beta/(alpha+beta)^2/(alpha+beta+1)
+  return(cbind(mean,variance))
+}
+
+index <- seq(1,length(d$resnum),1)
+
+p_variance_w <- sapply(index, function(x) pmv(d[x,"brs1"]+alpha0, d[x,"total_carriers"] - d[x,"brs1"] + beta0)[,2])
+
+p_variance_w[p_variance_w<quantile(p_variance_w,0.2, na.rm = T)] <- quantile(p_variance_w,0.2,na.rm = T)
+p_variance_w <- replace(p_variance_w, is.na(p_variance_w), 0)
+d$p_variance_w <- p_variance_w
+
+```
+
+<a href="#top">Back to top</a>  
+
+## Step 5 Calculate penetrance density from $\tilde\mu_i$ using function `funcdist`
+
+Note that only 774 out of 1439 (53.8%) variants fall within structured regions of the protein.  
+
+```{r}
+
+for(rec in seq(2,2016,1)){
+  #print(rec)
+  ld <- funcdist(rec, "var", d[!is.na(d$total_carriers) & d$total_carriers>0 & d$mut_type != "nonsense",], scn5a_dist, "penetrance_brs1", "sigmoid", 7)
+  d[!is.na(d$resnum)& d$resnum == rec,"brs1_dist"] <- ld[1]
+  d[!is.na(d$resnum)& d$resnum == rec,"brs1_dist_weight"] <- ld[2] 
+}
+
+
+```
+
+<a href="#top">Back to top</a>  
+
+## Step 6 Fit posterior mean $\tilde\mu_i$ with clinical covariates  
+The clinical covariates include `eaRate`, `blastpssm`, `provean_score`, `pph2_prob`, `ipeak`, and penetrance density.  
+
+Here pattern mixture model is used.   
+
+<a href="#top">Back to top</a>  
+
+## Step 7 Use fitted penetrance and MSE from Step 6 to solve for $\alpha$ and $\beta$  
+Adjust $\alpha_{fi}$ and $\beta_{fi}$ to $\alpha_0$ and $\beta_0$ if they were too small (<0.01)  
+
+<a href="#top">Back to top</a>  
+
+## Step 8 Calculate convergence criterion $\delta$ to see if it's small enough to end the loop  
+
+Calculate the convergence criterion $\delta$ as follows, and if it's greater than 0.1, then repeat Step 6 to Step 8. When $\delta$ is smaller than 0.1, EM converges.  
+
+$$\delta=\sum_{i=1}^m |p^{em+}_i-p^{em-}_i| $$
+
+where $p_i^{em+}$ is the penetrance after one iteration of EM alogrithm for each variant, and $p_i^{em-}$ is the penetrance from the previous iteration of EM alogrithm for each variant.  
+
+EM algorithm converges in 7 steps.    
+
+
+```{r}
+
+solab <- function(mean, variance){
+  alpha <- (mean^2 * (1-mean) - variance * mean)/variance
+  beta <- alpha * (1 / mean - 1)
+  return(c(alpha,beta))
+}
+
+delta <- 10
+
+d$eaRate <- as.numeric(d$eaRate)
+d$blastpssm <- as.numeric(d$blastpssm)
+d$ipeak <- suppressWarnings(as.numeric(d$ipeak))
+
+covariates <- c("eaRate","blastpssm","provean_score","pph2_prob","ipeak","brs1_dist", "REVEL")
+
+# weight for weighted regression
+weight_r <- 1/p_variance_w
+d$weight_r <- weight_r
+d[d$total_carriers<1,"weight_r"]<-0
+
+d$alpha_1_w <- d$brs1+alpha0
+d$beta_1_w <- d$total_carriers-d$brs1+beta0
+
+regression <- function(dv, pivs, nivs, data) {
+  # run a linear model with text arguments for dv and ivs
+  piv_string <- paste(pivs, collapse=" + ")
+  niv_string <- paste(nivs, collapse=" - ")
+  if(niv_string!="") iv_string <- paste(piv_string, " - ", niv_string, sep = "")
+  if(niv_string=="") iv_string <- paste(piv_string)
+  #print(iv_string)
+  regression_formula <- as.formula(paste(dv, iv_string, sep=" ~ "))
+  #print(regression_formula)
+  lm(regression_formula, data, weights = d$weight_r)
+}
+
+count <- 0
+
+while(delta>0.1 & count < 10){
+  
+  count <- count + 1
+  alpha_f <- NULL
+  beta_f <- NULL
+  
+  for(i in 1:nrow(d)){
+  newdata = data.frame(var=d[i,"var"])
+  newdata[covariates] <- d[i,covariates]
+  model <- regression("p_mean_w", covariates, 
+                      colnames(newdata)[colSums(is.na(newdata))>0], d)
+  mean_f <- predict(model, newdata)
+  variance_f <- (predict(model, newdata,se.fit = T)$se.fit)^2
+  alpha <- solab(mean_f,variance_f)[1]
+  beta <- solab(mean_f,variance_f)[2]
+  if(alpha<0.01 | beta<0.01){
+    alpha_f[i]=alpha0
+    beta_f[i]=beta0
+  }else{
+    alpha_f[i]=alpha
+    beta_f[i]=beta
+  }
+  }
+  
+  d$new_mean <- (alpha_f + d$brs1)/(alpha_f + beta_f + d$total_carriers)
+  
+  delta <- sum(abs(d[d$total_carriers>0,"new_mean"]-d[d$total_carriers>0,"p_mean_w"]))
+  
+  d$p_mean_w <- d$new_mean
+
+}
+
+```
+
+<a href="#top">Back to top</a>  
+
+Scale the variance by a factor of 20, add function and structure annotations  
+
+```{r}
+# update alpha and beta
+
+# when tuning parameter is 20
+d$variance <- d$p_mean_w*(1-d$p_mean_w)
+d$variance <- d$variance / 20
+
+d$alpha_g <- (d$p_mean_w^2 * (1-d$p_mean_w) - d$variance * d$p_mean_w) / d$variance
+d$beta_g <- d$alpha_g * (1 / d$p_mean_w - 1)
+
+# update brs1/lqt3 penetrance posterior estimates
+d$brs1_penetrance<-(d$alpha_g+d$brs1)/(d$total_carriers+d$beta_g+d$alpha_g)
+d$lqt3_penetrance<-(0.366+d$lqt3)/(d$total_carriers+0.366+2.88)
+
+# annotate functional perturbation
+d$Function<-NA
+d[!is.na(d$ipeak) & d$ipeak<0.1,"Function"]<-"LOF"
+d[!is.na(d$ipeak) & d$ipeak<0.5 & d$ipeak>=0.1,"Function"]<-"Partial_LOF"
+d[!is.na(d$ipeak) & d$ipeak>=0.5 & d$ipeak<0.75,"Function"]<-"Mild_LOF"
+d[!is.na(d$ipeak) & d$ipeak>=0.75 & d$ipeak<1.25,"Function"]<-"Normal"
+d[!is.na(d$ipeak) & d$ipeak>=1.25,"Function"]<-"GOF"
+d[!is.na(d$vhalfact) & d$vhalfact>10,"Function"]<-"Partial_LOF"
+d[!is.na(d$ilate) & d$ilate>=3,"Function"]<-"GOF"
+
+# annotate structural location (hotspot) 
+d$Structure<-NA
+d[!is.na(d$brs1_dist) & d$brs1_dist<0.1,"Structure"]<-"Non_Hotspot"
+d[!is.na(d$brs1_dist) & d$brs1_dist>=0.1 & d$brs1_dist<0.4,"Structure"]<-"Mild_Hotspot"
+d[!is.na(d$brs1_dist) & d$brs1_dist>=0.4,"Structure"]<-"Hotspot"
+
+save(d,file="CheckPoint_20.RData")
+
+```
+
+# Results
+
+## Part 1 Coverage plots
+### Bootstrap and get the coverage rate 
+(1) Use the observed penetrance from some variant as the TRUE penetrance for that variant, generate n binomial observations
+
+(2) Use the final EM algorithm posterior as the prior for Beta-Binomial, incorporate data from previous step, generate the posterior distribution, get 95% credible interval.
+
+(3) Check whether the interval cover the true penetrance from Step 1.
+
+(4) Repeat Step 1 to Step 3 N times to get the coverage rate.  
+
+### Bootstrap function 
+
+```{r function}
+
+BootsCoverage <- function(var,n=100,N=1000,true){
+  
+  # var: variant name
+  # n: number of subjects in the new data
+  # N: number of Bootstrap
+  
+  if(true=="empirical") true="p_empirical"
+  if(true=="observed") true="p_observed"
+  
+  # extract the "true" penetrance
+  true.p <- d[d$var==var,true]
+  
+  # generate binomial data 
+  event <- rbinom(N,n,true.p)
+  
+  # get the posterior credible interval
+  alpha <- d$alpha_g[which(d$var==var)] 
+  beta <- d$beta_g[which(d$var==var)] 
+  
+  new.alpha <- alpha + event
+  new.beta <- beta + n - event
+  
+  lb <- qbeta(0.025,new.alpha,new.beta)
+  ub <- qbeta(0.975,new.alpha,new.beta)
+  
+  # change lb to floor of nearest 0.01
+  lb <- floor(lb*100)/100
+  
+  return(sum(lb < true.p & ub > true.p)/N) 
+}
+
+
+```
+
+
+<a href="#top">Back to top</a>  
+
+### Plot coverage
+#### Empirical penetrance as the true penetrance
+
+The coverage plot where the empirical penetrance is the true penetrance and one hundred new observations are added is shown below. 
+
+```{r}
+
+load("CheckPoint_20.RData")
+
+########## when n = 100 ##########
+
+results <- sapply(d$var,function(x) BootsCoverage(x,n=100,true="empirical") )
+
+carriers.size <- ifelse(d$total_carriers <= 10,1,ifelse(d$total_carriers <= 100,2,ifelse(d$total_carriers <= 1000,3,ifelse(d$total_carriers <= 10^4,4,5) )))
+
+new.data <- data.frame(Penetrance=d$p_empirical,Coverage=results,Number=log10(d$total_carriers))
+
+ggplot(data=new.data,aes(x=Penetrance,y=Coverage))+geom_point(aes(size=Number,color=Number),shape=20)+geom_hline(yintercept = 0.95,color="red")+scale_x_continuous(limits=c(0,1))+scale_y_continuous(limits=c(0,1))+labs(x=" True penetrance under simulation", y="Coverage rate", size=TeX("$\\log_{10}$(Total number of carriers)"),color=TeX("$\\log_{10}$(Total number of carriers)"))+
+  theme(legend.position = "bottom",legend.box = 'vertical',legend.justification = 'left',legend.box.just = 'left',legend.title = element_text(size=8))+scale_colour_gradient(low = "dodgerblue", high = "black")
+```
+
+#### Observed penetrance as the true penetrance
+
+The coverage plot where the observed penetrance is the true penetrance and one hundred new observations are added is shown below. 
+
+```{r}
+########## when n = 100 ##########
+
+results <- sapply(d$var,function(x) BootsCoverage(x,n=100,true="observed") )
+
+carriers.size <- ifelse(d$total_carriers <= 10,1,ifelse(d$total_carriers <= 100,2,ifelse(d$total_carriers <= 1000,3,ifelse(d$total_carriers <= 10^4,4,5) )))
+
+new.data <- data.frame(Penetrance=d$p_observed,Coverage=results,Number=log10(d$total_carriers))
+
+ggplot(data=new.data,aes(x=Penetrance,y=Coverage))+geom_point(aes(size=Number,color=Number))+geom_hline(yintercept = 0.95,color="red")+scale_x_continuous(limits=c(0,1))+scale_y_continuous(limits=c(0,1))+labs(x=" True penetrance under simulation", y="Coverage rate", size=TeX("$\\log_{10}$(Total number of carriers)"),color=TeX("$\\log_{10}$(Total number of carriers)"))+
+  theme(legend.position = "bottom",legend.box = 'vertical',legend.justification = 'left',legend.box.just = 'left',legend.title = element_text(size=8))+scale_colour_gradient(low = "dodgerblue", high = "black")
+
+```
+
+<a href="#top">Back to top</a>  
+
+## Part 2 Output Bland-Altman plots
+### EM prior and EM posterior
+
+```{r}
+# EM prior and EM posterior
+
+prior.mean <- d$alpha_g/(d$alpha_g+d$beta_g)
+posterior.mean <- (d$alpha_g + d$brs1)/(d$alpha_g+d$beta_g+d$total_carriers)
+
+ba.data <- data.frame(Difference=prior.mean-posterior.mean, Average=(prior.mean+posterior.mean)/2,Size=log10(d$total_carriers))
+
+
+ggplot(data=ba.data,aes(x=Average,y=Difference))+geom_point(aes(size=Size,color=Size))+scale_x_continuous(limits=c(0,1))+scale_y_continuous(limits=c(-0.6,0.6),breaks=seq(-0.6,0.6,length=9))+labs(x="Average of EM prior penetrance and EM posterior penetrance",y="EM prior penetrance- EM posterior penetrance",size=TeX("$\\log_{10}$(Total number of carriers)"),color=TeX("$\\log_{10}$(Total number of carriers)"))+
+  theme(legend.position = "bottom",legend.box = 'vertical',legend.justification = 'left',legend.box.just = 'left',legend.title = element_text(size=10))+scale_colour_gradient(low = "dodgerblue", high = "black")
+```
+
+### EM prior and empirical posterior
+
+```{r}
+# EM prior and empirical posterior
+
+prior.mean <- d$alpha_g/(d$alpha_g+d$beta_g)
+posterior.mean <- (0.4492651 + d$brs1)/(0.4492651+2.727777+d$total_carriers)
+
+ba.data <- data.frame(Difference=prior.mean-posterior.mean, Average=(prior.mean+posterior.mean)/2,Size=log10(d$total_carriers))
+
+ggplot(data=ba.data,aes(x=Average,y=Difference))+geom_point(aes(size=Size,color=Size))+scale_x_continuous(limits=c(0,1))+scale_y_continuous(limits=c(-0.6,0.6),breaks=seq(-0.6,0.6,length=9))+labs(x="Average of EM prior penetrance and empirical posterior penetrance",y="EM prior penetrance- Empirical posterior penetrance",size=TeX("$\\log_{10}$(Total number of carriers)"),color=TeX("$\\log_{10}$(Total number of carriers)"))+
+  theme(legend.position = "bottom",legend.box = 'vertical',legend.justification = 'left',legend.box.just = 'left',legend.title = element_text(size=10))+scale_colour_gradient(low = "dodgerblue", high = "black")+guides(color = guide_colorbar(order = 1),
+         size = guide_legend(order = 2))
+```
+
+### EM posterior and empirical posterior
+
+```{r}
+# EM posterior and empirical posterior
+
+prior.mean <- (d$alpha_g + d$brs1)/(d$alpha_g+d$beta_g+d$total_carriers)
+posterior.mean <- (0.4492651 + d$brs1)/(0.4492651+2.727777+d$total_carriers)
+
+ba.data <- data.frame(Difference=prior.mean-posterior.mean, Average=(prior.mean+posterior.mean)/2,Size=log10(d$total_carriers))
+
+ggplot(data=ba.data,aes(x=Average,y=Difference))+geom_point(aes(size=Size,color=Size))+scale_x_continuous(limits=c(0,1))+scale_y_continuous(limits=c(-0.6,0.6),breaks=seq(-0.6,0.6,length=9))+labs(x="Average of EM posterior penetrance and empirical posterior penetrance",y="EM posterior penetrance- Empirical posterior penetrance",size=TeX("$\\log_{10}$(Total number of carriers)"),color=TeX("$\\log_{10}$(Total number of carriers)"))+
+  theme(legend.position = "bottom",legend.box = 'vertical',legend.justification = 'left',legend.box.just = 'left',legend.title = element_text(size=10))+scale_colour_gradient(low = "dodgerblue", high = "black")
+
+```
+
+<a href="#top">Back to top</a>  
+
+## Part 3 Forest plots
+
+The code to produce the forest plots is shown in the code chunk.    
+
+```{r tuning 20 residue number forest plot, eval=F}
+rm(d)
+
+load("CheckPoint_20.RData")
+
+new_mean <- (d$alpha_g + d$brs1)/(d$alpha_g+d$beta_g+d$total_carriers)
+alt.mean <- (0.4492651 + d$brs1)/(0.4492651+2.727777+d$total_carriers)
+
+lower <- qbeta(0.025,d$alpha_g,d$beta_g)
+higher <- qbeta(0.975,d$alpha_g,d$beta_g) 
+
+forest.data <- data.frame(variant = d$var, em.posterior = new_mean, empirical.posterior=alt.mean,
+                          lower=lower, higher=higher,total.carriers=d$total_carriers, brs1=d$brs1, resnum=d$resnum)
+
+forest.data <- forest.data[order(forest.data$resnum,forest.data$total.carriers),]
+
+head(forest.data)
+
+plotf <- function(a,b){
+  png( paste("Plots/Forest Plots/", a, "-",b,"pics.png",sep=""),res=300,height=10,width=10,units="in")
+  forestplot(paste(forest.data[a:b,"variant"], " ", forest.data$brs1[a:b], "/", forest.data$total.carriers[a:b]), 
+           fn.ci_norm = fpDrawNormalCI,
+           boxsize = .25, # We set the box size to better visualize the type
+           line.margin = .1, # We need to add this to avoid crowding
+           mean = cbind(forest.data[a:b,"em.posterior"]),
+           lower = cbind(forest.data[a:b,"lower"]),
+           upper = cbind(forest.data[a:b,"higher"]),
+           xticks=seq(0,1,0.1),
+           col=fpColors(box="blue",line="red"),
+           xlab="Number line")
+  dev.off()
+  
+}
+
+sapply(0:27*50+1,function(x) plotf(x,x+49) )
+plotf(1401,1439)
+
+```
+
+The forests plots are pasted below, where blue boxes are EM posteriors, and red segements are EM priors. Variant name is followed by number of Brs1 cases / total number of heterozygotes.    
+
+![](Plots/Forest Plots/1-50pics.png)
+
+![](Plots/Forest Plots/51-100pics.png)
+
+![](Plots/Forest Plots/101-150pics.png)
+
+![](Plots/Forest Plots/151-200pics.png)
+
+![](Plots/Forest Plots/201-250pics.png)
+
+![](Plots/Forest Plots/251-300pics.png)
+
+![](Plots/Forest Plots/301-350pics.png)
+
+![](Plots/Forest Plots/351-400pics.png)
+
+![](Plots/Forest Plots/401-450pics.png)
+
+![](Plots/Forest Plots/451-500pics.png)
+
+![](Plots/Forest Plots/501-550pics.png)
+
+![](Plots/Forest Plots/551-600pics.png)
+
+![](Plots/Forest Plots/601-650pics.png)
+
+![](Plots/Forest Plots/651-700pics.png)
+
+![](Plots/Forest Plots/701-750pics.png)
+
+![](Plots/Forest Plots/751-800pics.png)
+
+![](Plots/Forest Plots/801-850pics.png)
+
+![](Plots/Forest Plots/851-900pics.png)
+
+![](Plots/Forest Plots/901-950pics.png)
+
+![](Plots/Forest Plots/951-1000pics.png)
+
+![](Plots/Forest Plots/1001-1050pics.png)
+
+![](Plots/Forest Plots/1051-1100pics.png)
+
+![](Plots/Forest Plots/1101-1150pics.png)
+
+
+![](Plots/Forest Plots/1151-1200pics.png)
+
+![](Plots/Forest Plots/1201-1250pics.png)
+
+![](Plots/Forest Plots/1251-1300pics.png)
+
+![](Plots/Forest Plots/1301-1350pics.png)
+
+![](Plots/Forest Plots/1351-1400pics.png)
+
+![](Plots/Forest Plots/1401-1439pics.png)
+
+<a href="#top">Back to top</a>  
+
+## Part 4 Correlation Coefficients and Plots 
+The code to produce the weighted correlations is shown in the code chunk. The size of the circles in the presented figures are scaled by the Log<sub>10</sub>(Total Number of Carriers).
+
+```{r}
+rm(d)
+library(boot)
+library(wCorr)
+load("CheckPoint_20.RData")
+d<-d[,!(names(d) %in% "aaneigh_rank_inc_loops")]
+
+plt.disease <- function(d, func, funcName, disName, xl=c(0,200), yl=c(0,100), variant="NA", sp=0.7){
+  par(cex=1, bty='l', lwd=2)
+  if (disName=="BrS_penetranceBayesian"){dis="BrS1"; pcolor="gray"}
+  else if(disName=="BrS_penetranceBayesian_initial"){dis="BrS1"; pcolor="gray"} 
+  else if (disName=="all_penetranceBayesian"){dis="BrS1 and LQT3"; pcolor="gray"}
+  plot(d[,func], (d[,disName]), pch=21,
+     bg=pcolor, cex=log(d[,"total_carriers"])+1, lwd=1.5, axes=FALSE, 
+     cex.lab=1.5, ylab=paste("Penetrance (%",dis,")",sep=""), xlab = funcName,
+     ylim = yl, xlim = xl)
+  
+  axis(side=1,lwd=3, cex.axis=1.5)
+  axis(side=2,lwd=3, cex.axis=1.5)
+  abline(a=0,b=1)
+
+  if (variant!="NA"){
+  points(d[d$var==variant,func], 100*(d[d$var==variant,disName]), pch=21, cex=log(d[d$var==variant,"total_carriers"])+1, lwd=1.5, col="black", bg="red")
+  }
+}
+
+d$BrS_penetranceBayesian<-(d$alpha_g+d$brs1)/(d$alpha_g+d$beta_g+d$total_carriers)
+filt<-0
+fglm<-d[d$total_carriers>filt & !is.na(d$blastpssm) & !is.na(d$ipeak) & !is.na(d$brs1_dist), ]
+```
+
+### Expectation Maximization
+The following figures and calculations compare EM priors (predicted) with EM posteriors (penetrance or "truth")
+
+#### Peak Current Covariate Alone
+
+```{r}
+model <- lm(BrS_penetranceBayesian ~ ipeak, fglm, weights = 1/fglm$p_variance_w)
+fglm$pred.ipeak<-predict(model, fglm, type="response")
+plt.disease(fglm, "pred.ipeak", "Predicted Penetrance", "BrS_penetranceBayesian", xl=c(0,0.9),yl=c(0,0.9))
+mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian,model$weights)
+foo <- boot(mod, function(data,indices)
+  weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
+```
+
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### Penetrance Density Covariate Alone
+
+```{r}
+
+model <- lm(BrS_penetranceBayesian ~ brs1_dist, fglm, weights = 1/fglm$p_variance_w)
+fglm$pred.feat_dist<-predict(model, fglm, type="response")
+plt.disease(fglm, "pred.feat_dist", "Predicted Penetrance", "BrS_penetranceBayesian", xl=c(0,0.9),yl=c(0,0.9))
+mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian,model$weights)
+foo <- boot(mod, function(data,indices)
+  weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
+
+```
+
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### Peak Current and Penetrance Density Covariates
+
+```{r}
+model <- lm(BrS_penetranceBayesian~ipeak+brs1_dist,fglm, weights = 1/fglm$p_variance_w)
+fglm$pred.ipeak.dist<-predict(model, fglm, type="response")
+plt.disease(fglm, "pred.ipeak.dist", "Predicted Penetrance", "BrS_penetranceBayesian", xl=c(0,0.9),yl=c(0,0.9))
+mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian,model$weights)
+foo <- boot(mod, function(data,indices)
+  weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
+
+```
+
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### In Silico, Peak Current, and Penetrance Density Covariates
+
+```{r}
+model <- lm(BrS_penetranceBayesian~ipeak+brs1_dist+eaRate+blastpssm+provean_score+pph2_prob,fglm, weights = 1/fglm$p_variance_w)
+fglm$pred.all.comps.ipeak<-predict(model, fglm, type="response")
+plt.disease(fglm, "pred.all.comps.ipeak", "Predicted Penetrance", "BrS_penetranceBayesian", xl=c(0,0.9),yl=c(0,0.9))
+mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian,model$weights)
+foo <- boot(mod, function(data,indices)
+  weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
+
+```
+
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### In Silico Covariates Alone
+
+```{r}
+model <- lm(BrS_penetranceBayesian~eaRate+blastpssm+provean_score+pph2_prob,fglm, weights = 1/fglm$p_variance_w)
+fglm$pred.all.comps<-predict(model, fglm, type="response")
+plt.disease(fglm, "pred.all.comps", "Predicted Penetrance", "BrS_penetranceBayesian", xl=c(0,0.9),yl=c(0,0.9))
+mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian,model$weights)
+foo <- boot(mod, function(data,indices)
+  weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
+
+```
+
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+### Empirical Bayes
+The code to produce the weighted correlations is shown in the code chunk. The size of the circles in the presented figures are scaled by the Log<sub>10</sub>(Total Number of Carriers). The following figures and calculations compare EM priors (predicted) with *Empirical* posteriors (penetrance or "truth")
+
+```{r}
+d$BrS_penetranceBayesian_initial<-(alpha_0_w+d$brs1)/(alpha_0_w+beta_0_w+d$total_carriers)
+filt<-0
+fglm<-d[d$total_carriers>filt & !is.na(d$blastpssm) & !is.na(d$ipeak) & !is.na(d$brs1_dist), ]
+
+model <- lm(BrS_penetranceBayesian_initial ~ ipeak, fglm, weights = 1/fglm$p_variance_w)
+fglm$pred.ipeak<-predict(model, fglm, type="response")
+plt.disease(fglm, "pred.ipeak", "Predicted Penetrance", "BrS_penetranceBayesian_initial", xl=c(0,0.9),yl=c(0,0.9))
+mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian_initial,model$weights)
+foo <- boot(mod, function(data,indices)
+  weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian_initial[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
+
+```
+
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### Penetrance Density Covariate Alone
+
+```{r}
+model <- lm(BrS_penetranceBayesian_initial ~ brs1_dist, fglm, weights = 1/fglm$p_variance_w)
+fglm$pred.feat_dist<-predict(model, fglm, type="response")
+plt.disease(fglm, "pred.feat_dist", "Predicted Penetrance", "BrS_penetranceBayesian_initial", xl=c(0,0.9),yl=c(0,0.9))
+mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian_initial,model$weights)
+foo <- boot(mod, function(data,indices)
+  weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian_initial[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
+
+```
+
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### Peak Current and Penetrance Density Covariates
+
+```{r}
+model <- lm(BrS_penetranceBayesian_initial~ipeak+brs1_dist,fglm, weights = 1/fglm$p_variance_w)
+fglm$pred.ipeak.dist<-predict(model, fglm, type="response")
+plt.disease(fglm, "pred.ipeak.dist", "Predicted Penetrance", "BrS_penetranceBayesian_initial", xl=c(0,0.9),yl=c(0,0.9))
+mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian_initial,model$weights)
+foo <- boot(mod, function(data,indices)
+  weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian_initial[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
+
+```
+
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### Peak Current and Penetrance Density Covariates
+
+```{r}
+model <- lm(BrS_penetranceBayesian_initial~ipeak+brs1_dist+eaRate+blastpssm+provean_score+pph2_prob,fglm, weights = 1/fglm$p_variance_w)
+fglm$pred.all.comps.ipeak<-predict(model, fglm, type="response")
+plt.disease(fglm, "pred.all.comps.ipeak", "Predicted Penetrance", "BrS_penetranceBayesian_initial", xl=c(0,0.9),yl=c(0,0.9))
+print("In Silico, Peak Current, and Penetrance Density Covariates")
+mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian_initial,model$weights)
+foo <- boot(mod, function(data,indices)
+  weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian_initial[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
+
+```
+
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
+#### In Silico Covariates Alone
+
+```{r}
+model <- lm(BrS_penetranceBayesian_initial~eaRate+blastpssm+provean_score+pph2_prob,fglm, weights = 1/fglm$p_variance_w)
+fglm$pred.all.comps<-predict(model, fglm, type="response")
+plt.disease(fglm, "pred.all.comps", "Predicted Penetrance", "BrS_penetranceBayesian_initial", xl=c(0,0.9),yl=c(0,0.9))
+mod<-data.frame(model$fitted.values,model$model$BrS_penetranceBayesian_initial,model$weights)
+foo <- boot(mod, function(data,indices)
+  weightedCorr(mod$model.fitted.values[indices],mod$model.model.BrS_penetranceBayesian_initial[indices], method="pearson", weights = mod$model.weights[indices])^2, R=1000)
+
+```
+
+Weighted R2: `r foo$t0`, 95% Confidence Interval: [`r quantile(foo$t,c(0.025,0.975))[[1]]` - `r quantile(foo$t,c(0.025,0.975))[[2]]`], AIC: `r extractAIC(model)[2]`
+
